@@ -270,6 +270,7 @@ class ParallelDo
     inline bool hasScript(Vector<types::RecompileInfo> &scripts, JSScript *script);
 }; // class ParallelDo
 
+//每个任务
 class ForkJoinShared : public TaskExecutor, public Monitor
 {
     /////////////////////////////////////////////////////////////////////////
@@ -300,6 +301,7 @@ class ForkJoinShared : public TaskExecutor, public Monitor
     // Locked Fields
     //
     // Only to be accessed while holding the lock.
+    // 全局，需要加锁读写
 
     uint32_t uncompleted_;         // Number of uncompleted worker threads
     uint32_t blocked_;             // Number of threads that have joined rendezvous
@@ -314,6 +316,7 @@ class ForkJoinShared : public TaskExecutor, public Monitor
     //
     // These can be read without the lock (hence the |volatile| declaration).
     // All fields should be *written with the lock*, however.
+    // 任意读，加锁写
 
     // Set to true when parallel execution should abort.
     volatile bool abort_;
@@ -335,6 +338,7 @@ class ForkJoinShared : public TaskExecutor, public Monitor
 
     // Executes slice #threadId of the work, either from a worker or
     // the main thread.
+    // 使用class ParallelIonInvoke
     void executePortion(PerThreadData *perThread, uint32_t threadId);
 
     // Rendezvous protocol:
@@ -371,6 +375,7 @@ class ForkJoinShared : public TaskExecutor, public Monitor
     ParallelResult execute();
 
     // Invoked from parallel worker threads:
+    // 每个任务的入口，调用executePortion
     virtual void executeFromWorker(uint32_t threadId, uintptr_t stackLimit);
 
     // Moves all the per-thread arenas into the main zone and
@@ -1438,15 +1443,15 @@ ForkJoinShared::executeFromWorker(uint32_t workerId, uintptr_t stackLimit)
 {
     JS_ASSERT(workerId < numSlices_ - 1);
 
-    PerThreadData thisThread(cx_->runtime);
+    PerThreadData thisThread(cx_->runtime);//Runtime和Context中每个thread相关的部分，js/src/jscntxt.h
     TlsPerThreadData.set(&thisThread);
     // Don't use setIonStackLimit() because that acquires the ionStackLimitLock, and the
     // lock has not been initialized in these cases.
-    thisThread.ionStackLimit = stackLimit;
+    thisThread.ionStackLimit = stackLimit;//设置堆栈限制
     executePortion(&thisThread, workerId);
     TlsPerThreadData.set(NULL);
 
-    AutoLockMonitor lock(*this);
+    AutoLockMonitor lock(*this);//关于blocked，uncompleted等等还没有细看
     uncompleted_ -= 1;
     if (blocked_ == uncompleted_) {
         // Signal the main thread that we have terminated.  It will be either
@@ -1478,7 +1483,7 @@ ForkJoinShared::executePortion(PerThreadData *perThread,
 
     // Make a new IonContext for the slice, which is needed if we need to
     // re-enter the VM.
-    IonContext icx(cx_, NULL);
+    IonContext icx(cx_, NULL);//不是说不能access cx_?
     uintptr_t *myStackTop = (uintptr_t*)&icx;
 
     JS_ASSERT(slice.bailoutRecord->topScript == NULL);
@@ -1487,6 +1492,7 @@ ForkJoinShared::executePortion(PerThreadData *perThread,
     // to establish the stack extent for this slice.
     slice.recordStackBase(myStackTop);
 
+    // 由fun_得到函数callee
     js::PerThreadData *pt = slice.perThreadData;
     RootedObject fun(pt, fun_);
     JS_ASSERT(fun->isFunction());
@@ -1496,6 +1502,8 @@ ForkJoinShared::executePortion(PerThreadData *perThread,
         // script can be collected between starting the parallel
         // op and reaching this point.  In that case, we just fail
         // and fallback.
+        // 有时，特别在GCZeal时，并行的ion脚本可能在开始并行操作和到达这点之间被回收
+        // 此时，失败并回退
         Spew(SpewOps, "Down (Script no longer present)");
         slice.bailoutRecord->setCause(ParallelBailoutMainScriptNotPresent,
                                       NULL, NULL, NULL);

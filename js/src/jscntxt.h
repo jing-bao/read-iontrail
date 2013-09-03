@@ -449,6 +449,10 @@ namespace js {
  * interpreter and runtime by having them take |PerThreadData*|
  * arguments instead of |JSContext*| or |JSRuntime*|.
  */
+ // 封装runtime和context中与单独thread相关的部分。
+ // 通常，因为大多数JS是单线程的，只有在mainThread中有一个实例。
+ // 而在并行JS部分，每个工作线程都有一个实例。
+ // 最后的目标是，通过用PerThreadData代替JSContext或JSRuntime，指定解释器和runtime中线程安全的部分
 class PerThreadData : public js::PerThreadDataFriendFields
 {
     /*

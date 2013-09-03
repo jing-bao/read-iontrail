@@ -34,6 +34,9 @@ namespace js {
  * parallel or sequential mode, you should make it take an
  * |Allocator*| rather than a |JSContext*|.
  */
+ // 封装进行分配需要的数据。典型的，每个compartment恰有一个Allocator。
+ // 但在并行执行模式，每个工作线程有一个Allocator。
+ // 通常，如果一段代码需要在串行和并行模式下都正常运行，你需要使用Allocator而不是JScontext
 class Allocator : public MallocProvider<Allocator>
 {
     JS::Zone *zone;

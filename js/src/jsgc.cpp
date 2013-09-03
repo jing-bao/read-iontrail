@@ -1170,6 +1170,8 @@ ArenaLists::parallelAllocate(Zone *zone, AllocKind thingKind, size_t thingSize)
      * fails, then we return NULL which will cause the parallel
      * section to abort.
      */
+     // 如果没有可用arena，则分配新的arena。
+     // 如果失败，返回NULL，这会导致并行部分终止
 
     void *t = allocateFromFreeList(thingKind, thingSize);
     if (t)

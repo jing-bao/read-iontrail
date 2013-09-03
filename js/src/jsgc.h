@@ -496,6 +496,7 @@ struct ArenaLists
      * thread-local, but the compartment |comp| is shared between all
      * threads.
      */
+     // 并行工作线程调用它来进行分配。所有线程共享同一个compartment
     void *parallelAllocate(JS::Zone *zone, AllocKind thingKind, size_t thingSize);
 
   private:
