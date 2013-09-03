@@ -188,6 +188,7 @@
 // allocation paths are UNSAFE in parallel code because they access
 // shared state (the compartment's arena lists and so forth) without
 // any synchronization.  They can also trigger GC in an ad-hoc way.
+// 通用的分配方式是不安全的。
 //
 // To deal with this, the forkjoin code creates a distinct |Allocator|
 // object for each slice.  You can access the appropriate object via
@@ -195,6 +196,7 @@
 // the execution is complete, all the objects found in these distinct
 // |Allocator| is merged back into the main compartment lists and
 // things proceed normally.
+// 给每个forkjoinslice分配一个allocator，结束后合并到主内存中
 //
 // In Ion-generated code, we will do allocation through the
 // |Allocator| found in |ForkJoinSlice| (which is obtained via TLS).
@@ -204,23 +206,31 @@
 // incremental GC terminology).  However, to be safe, we also block
 // upon entering a parallel section to ensure that any concurrent
 // marking or incremental GC has completed.
+// Allocator通过forkjoinslice存储，forkjoinslice通过TLS存储。
+// 在生成的机器码中，通过allocator进行分配，不需要写屏障。
+// 概念上，永不需要写屏障，因为我们只允许对新分配的对象进行写操作，而这些对象在GC中是black的（已扫描？？）。
+// 但为了安全起见，我们block upon进入并行部分，来确保任何并发的marking或者incremental GC已经完成.
 //
 // If the GC *is* triggered during parallel execution, it will
 // redirect to the current ForkJoinSlice() and invoke requestGC() (or
 // requestZoneGC).  This will cause an interrupt.  Once the interrupt
 // occurs, we will stop the world and then re-trigger the GC to run
 // it.
-//
+// 如果在并行执行时触发了GC，会重定向到当前的forkjoinslice然后调用requestGC或者requestZoneGC。
+// 这会引起中断。一旦中断发生，我们stop the world然后重新触发GC。
+// 
 // Current Limitations:
 //
 // - The API does not support recursive or nested use.  That is, the
 //   JavaScript function given to |ForkJoin| should not itself invoke
 //   |ForkJoin()|. Instead, use the intrinsic |InParallelSection()| to
 //   check for recursive use and execute a sequential fallback.
-//
+//   不支持递归，不能在传递给forkjoin的函数中再次调用forkjoin。使用InParallelSection来判断
+// 
 // - No load balancing is performed between worker threads.  That means that
 //   the fork-join system is best suited for problems that can be slice into
 //   uniform bits.
+//   没有线程之间的负载均衡，所以最好把任务均匀分配
 //
 ///////////////////////////////////////////////////////////////////////////
 

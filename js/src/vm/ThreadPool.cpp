@@ -24,8 +24,9 @@ using namespace js;
 // Once the worker's state is set to |TERMINATING|, the worker will
 // exit as soon as its queue is empty.
 
-const size_t WORKER_THREAD_STACK_SIZE = 1*1024*1024;
+const size_t WORKER_THREAD_STACK_SIZE = 1*1024*1024;////每个线程的堆栈大小
 
+//代表每个线程
 class js::ThreadPoolWorker : public Monitor
 {
     const size_t workerId_;
@@ -40,10 +41,12 @@ class js::ThreadPoolWorker : public Monitor
     // Worklist for this thread.
     //
     // Modified only while holding the ThreadPoolWorker's lock.
+    // 任务列表
     js::Vector<TaskExecutor*, 4, SystemAllocPolicy> worklist_;
 
     // The thread's main function
     static void ThreadMain(void *arg);
+    // 主要工作实现函数，依次运行worklist里的任务，具体执行通过TaskExecutor::executeFromWorker
     void run();
 
   public:
@@ -53,15 +56,18 @@ class js::ThreadPoolWorker : public Monitor
     bool init();
 
     // Invoked from main thread; signals worker to start.
+    // 创建线程，每个线程的入口函数是ThreadMain，ThreadMain则会调用run
     bool start();
 
     // Submit work to be executed. If this returns true, you are guaranteed
     // that the task will execute before the thread-pool terminates (barring
     // an infinite loop in some prior task).
+    // 给worklist增加一个任务
     bool submit(TaskExecutor *task);
 
     // Invoked from main thread; signals worker to terminate and blocks until
     // termination completes.
+    // 终结
     void terminate();
 };
 
@@ -77,7 +83,7 @@ ThreadPoolWorker::~ThreadPoolWorker()
 bool
 ThreadPoolWorker::init()
 {
-    return Monitor::init();
+    return Monitor::init();//Monitor类涉及锁和条件变量的操作
 }
 
 bool
@@ -120,11 +126,12 @@ ThreadPoolWorker::run()
     // subtract the size of the stack from the address of a local
     // variable and give a 10k buffer.  Is there a better way?
     // (Note: 2k proved to be fine on Mac, but too little on Linux)
+    // 堆栈大小的计算没看明白
     uintptr_t stackLimitOffset = WORKER_THREAD_STACK_SIZE - 10*1024;
     uintptr_t stackLimit = (((uintptr_t)&stackLimitOffset) +
                              stackLimitOffset * JS_STACK_GROWTH_DIRECTION);
 
-    AutoLockMonitor lock(*this);
+    AutoLockMonitor lock(*this);//锁的运用没有细看
 
     for (;;) {
         while (!worklist_.empty()) {
@@ -286,7 +293,7 @@ ThreadPool::submitOne(JSContext *cx, TaskExecutor *executor)
 {
     JS_ASSERT(numWorkers() > 0);
 
-    runtime_->assertValidThread();
+    runtime_->assertValidThread();//确保这个thread和runtime是可以access的？？？具体没看
 
     if (!lazyStartWorkers(cx))
         return false;
