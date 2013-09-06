@@ -478,16 +478,18 @@ class AutoMarkWorldStoppedForGC
 // These are the top-level objects that manage the parallel execution.
 // They handle parallel compilation (if necessary), triggering
 // parallel execution, and recovering from bailouts.
-
+// 这些是管理并行执行的顶层对象。
+// 它们处理并行编译（如果必要），触发并行执行，并从bailout中恢复。
 static const char *ForkJoinModeString(ForkJoinMode mode);
 
+// 函数的核心操作是ParallelDo.apply()
 bool
 js::ForkJoin(JSContext *cx, CallArgs &args)
 {
     JS_ASSERT(args[0].isObject()); // else the self-hosted code is wrong
     JS_ASSERT(args[0].toObject().isFunction());
 
-    ForkJoinMode mode = ForkJoinModeNormal;
+    ForkJoinMode mode = ForkJoinModeNormal;//执行模式，通常用于test
     if (args.length() > 1) {
         JS_ASSERT(args[1].isInt32()); // else the self-hosted code is wrong
         JS_ASSERT(args[1].toInt32() < NumForkJoinModes);
@@ -569,6 +571,8 @@ js::ParallelDo::ParallelDo(JSContext *cx,
     mode_(mode)
 { }
 
+// 调用者：ForkJoin
+// 主要调用：js::ParallelDo::parallelExecution
 ExecutionStatus
 js::ParallelDo::apply()
 {
@@ -601,7 +605,7 @@ js::ParallelDo::apply()
 
     SpewBeginOp(cx_, "ParallelDo");
 
-    uint32_t slices = ForkJoinSlices(cx_);
+    uint32_t slices = ForkJoinSlices(cx_);//总共的slice数目，包括主线程和所有工作线程，即threadpool中的数目+1
 
     if (!bailoutRecords_.resize(slices))
         return SpewEndOp(ExecutionFatal);
@@ -635,15 +639,15 @@ js::ParallelDo::apply()
         JS_NOT_REACHED("Invalid mode");
     }
 
-    while (bailouts < MAX_BAILOUTS) {
+    while (bailouts < MAX_BAILOUTS) { //在bailout不超过3次前
         for (uint32_t i = 0; i < slices; i++)
             bailoutRecords_[i].reset(cx_);
 
-        if (compileForParallelExecution(&status) == RedLight)
+        if (compileForParallelExecution(&status) == RedLight)//编译所有要用的script
             return SpewEndOp(status);
 
         JS_ASSERT(worklist_.length() == 0);
-        if (parallelExecution(&status) == RedLight)
+        if (parallelExecution(&status) == RedLight)//执行
             return SpewEndOp(status);
 
         if (recoverFromBailout(&status) == RedLight)
@@ -699,6 +703,7 @@ js::ParallelDo::enqueueInitialScript(ExecutionStatus *status)
     return GreenLight;
 }
 
+// 调用者：ParallelDo::apply()
 js::ParallelDo::TrafficLight
 js::ParallelDo::compileForParallelExecution(ExecutionStatus *status)
 {
@@ -711,6 +716,11 @@ js::ParallelDo::compileForParallelExecution(ExecutionStatus *status)
     // warmup runs to complete all the work; or (3) we have compiled
     // all scripts we think likely to be executed during a parallel
     // execution.
+    // 这个程序试图做执行一次并行尝试所需的所有编译。
+    // 当它返回时，
+    //   要么我们回退到串行，
+    //   要么我们已经有足够的warmup来完成工作，
+    //   要么我们编译完成了所有认为在并行执行中可能执行的脚本。
 
     RootedFunction fun(cx_);
     RootedScript script(cx_);
@@ -724,6 +734,7 @@ js::ParallelDo::compileForParallelExecution(ExecutionStatus *status)
         bool offMainThreadCompilationsInProgress = false;
 
         // Walk over the worklist to check on the status of each entry.
+        // worklist_是JSscript的vector
         for (uint32_t i = 0; i < worklist_.length(); i++) {
             script = worklist_[i];
             fun = script->function();
@@ -731,7 +742,7 @@ js::ParallelDo::compileForParallelExecution(ExecutionStatus *status)
             if (!script->hasParallelIonScript()) {
                 // Script has not yet been compiled. Attempt to compile it.
                 SpewBeginCompile(script);
-                MethodStatus mstatus = ion::CanEnterInParallel(cx_, script);
+                MethodStatus mstatus = ion::CanEnterInParallel(cx_, script);//在ion.cpp, 判断是否可以并行，并编译
                 SpewEndCompile(mstatus);
 
                 switch (mstatus) {
@@ -771,6 +782,8 @@ js::ParallelDo::compileForParallelExecution(ExecutionStatus *status)
             // call target" flag is set and add the targets to our
             // worklist if so. Clear the flag after that, since we
             // will be compiling the call targets.
+            // 脚本编译完成，将call target加入worklist
+            // 猜想是指，被调用的脚本也需要编译
             JS_ASSERT(script->hasParallelIonScript());
             if (appendCallTargetsToWorklist(i, status) == RedLight)
                 return RedLight;
@@ -791,6 +804,7 @@ js::ParallelDo::compileForParallelExecution(ExecutionStatus *status)
         // iterating and caused some of the scripts we thought we had
         // compiled to be collected. In that case, we will just have
         // to begin again.
+        // 检查由于GC导致的脚本缺失
         bool allScriptsPresent = true;
         for (uint32_t i = 0; i < worklist_.length(); i++) {
             if (!worklist_[i]->hasParallelIonScript()) {
@@ -808,6 +822,7 @@ js::ParallelDo::compileForParallelExecution(ExecutionStatus *status)
     // At this point, all scripts and their transitive callees are in
     // a compiled state.  Therefore we can clear the
     // "hasUncompiledCallTarget" flag on them and then clear the worklist.
+    // 完成所有脚本的编译
     for (uint32_t i = 0; i < worklist_.length(); i++) {
         JS_ASSERT(worklist_[i]->hasParallelIonScript());
         JS_ASSERT(calleesEnqueued_[i]);
@@ -1147,6 +1162,8 @@ class AutoEnterParallelSection
     }
 };
 
+// 调用者：ParallelDo::apply()
+// 主调：ForkJoinShared::execute()
 js::ParallelDo::TrafficLight
 js::ParallelDo::parallelExecution(ExecutionStatus *status)
 {
@@ -1165,13 +1182,13 @@ js::ParallelDo::parallelExecution(ExecutionStatus *status)
 
     RootedObject rootedFun(cx_, fun_);
     ForkJoinShared shared(cx_, threadPool, rootedFun, numSlices, numSlices - 1,
-                          &bailoutRecords_[0]);
+                          &bailoutRecords_[0]);//ForkJoinShared用来表示任务
     if (!shared.init()) {
         *status = ExecutionFatal;
         return RedLight;
     }
 
-    switch (shared.execute()) {
+    switch (shared.execute()) {//执行ForkJoinShared
       case TP_SUCCESS:
         *status = ExecutionParallel;
         return RedLight;
@@ -1364,6 +1381,10 @@ ForkJoinShared::~ForkJoinShared()
         js_delete(allocators_.popCopy());
 }
 
+// 调用者：ParallelDo::parallelExecution()
+// 调用：ThreadPool::submitAll()
+// 调用:executeFromMainThread()
+// ForkJoinShared执行的入口
 ParallelResult
 ForkJoinShared::execute()
 {
@@ -1379,7 +1400,7 @@ ForkJoinShared::execute()
     {
         gc::AutoSuppressGC gc(cx_);
         AutoUnlockMonitor unlock(*this);
-        if (!threadPool_->submitAll(cx_, this))
+        if (!threadPool_->submitAll(cx_, this))//将自身增加到每个thread的worklist中
             return TP_FATAL;
         executeFromMainThread();
     }
@@ -1461,6 +1482,7 @@ ForkJoinShared::executeFromWorker(uint32_t workerId, uintptr_t stackLimit)
     }
 }
 
+// 调用者: execute()
 void
 ForkJoinShared::executeFromMainThread()
 {
@@ -1476,7 +1498,7 @@ ForkJoinShared::executePortion(PerThreadData *perThread,
 
     Allocator *allocator = allocators_[threadId];
     ForkJoinSlice slice(perThread, threadId, numSlices_, allocator,
-                        this, &records_[threadId]);
+                        this, &records_[threadId]);//生成当前ForkJoinSlice
     AutoSetForkJoinSlice autoContext(&slice);
 
     Spew(SpewOps, "Up");
@@ -1510,12 +1532,13 @@ ForkJoinShared::executePortion(PerThreadData *perThread,
         setAbortFlag(false);
     } else {
         ParallelIonInvoke<3> fii(cx_->compartment, callee, 3);
-
+        
+        // func(id, n, warmup)的参数设置
         fii.args[0] = Int32Value(slice.sliceId);
         fii.args[1] = Int32Value(slice.numSlices);
         fii.args[2] = BooleanValue(false);
 
-        bool ok = fii.invoke(perThread);
+        bool ok = fii.invoke(perThread);//运行当前函数
         JS_ASSERT(ok == !slice.bailoutRecord->topScript);
         if (!ok)
             setAbortFlag(false);

@@ -22,23 +22,32 @@
 // shared memory (as distinct from Web Workers).  The idea is that you have
 // some (typically data-parallel) operation which you wish to execute in
 // parallel across as many threads as you have available.
-//
+// 这是使用共享内存执行多线程javascript的基础构件。
+// 思路是：你有一些（通常是数据并行）的操作，希望能使用尽可能多的线程并行运行。
+// 
 // The ForkJoin abstraction is intended to be used by self-hosted code
 // to enable parallel execution.  At the top-level, it consists of a native
 // function (exposed as the ForkJoin intrinsic) that is used like so:
+// ForkJoin抽象意在被self-hosted代码用来启用并行执行。
+// 在顶层，它包含一个本地函数（作为ForkJoin的固有性质暴露？），函数这样使用：
 //
 //     ForkJoin(func, feedback)
-//
+// 
 // The intention of this statement is to start N copies of |func()|
 // running in parallel.  Each copy will then do 1/Nth of the total
 // work.  Here N is number of workers in the threadpool (see
 // ThreadPool.h---by default, N is the number of cores on the
 // computer).
+// 该语句的目的是开启func的N个拷贝，并行运行。每份拷贝会做所有工作的1/N.
+// N是threadpool中工作线程的数目。
+// N默认为计算机的核数。
 //
 // Typically, each of the N slices will execute from a different
 // worker thread, but that is not something you should rely upon---if
 // we implement work-stealing, for example, then it could be that a
 // single worker thread winds up handling multiple slices.
+// 通常，N个slice会分别从不同工作线程执行，但你不应该依赖它。
+// 例如，如果我们实现了工作窃取，就有可能一个工作线程最终处理了多个slice
 //
 // The second argument, |feedback|, is an optional callback that will
 // receiver information about how execution proceeded.  This is
@@ -46,6 +55,9 @@
 // users.  Note that gathering the data to provide to |feedback| is
 // not free and so execution will run somewhat slower if |feedback| is
 // provided.
+// 第二个参数feedback是一个可选callback，会接收执行情况的信息。
+// 它的目的是使用在单元测试中，但也被用来提供反馈给用户。
+// 注意收集数据提供给feedback不是无代价的，所以如果提供了feedback，执行会变慢。
 //
 // func() should expect the following arguments:
 //
@@ -57,10 +69,16 @@
 // idea is that if |warmup| is true, |func| should only do a fixed
 // amount of work.  If |warmup| is false, |func| should try to do all
 // remaining work is assigned.
+// id是slice的id，n是slice的总数目。
+// warmup在 warmup or revovery 阶段是true。
+// 如果warmup为真，func应该做固定数目的工作。
+// 如果warmup为假，func应该尝试昨晚所有指派的工作。
 //
 // Note that we implicitly assume that |func| is tracking how much
 // work it has accomplished thus far; some techniques for doing this
 // are discussed in |ParallelArray.js|.
+// 注意，我们隐含假定func会记录目前完成了多少工作。
+// 一些相关技术在ParallelArray.js
 //
 // Warmups and Sequential Fallbacks
 // --------------------------------
@@ -324,6 +342,8 @@ struct ParallelBailoutRecord {
 
 struct ForkJoinShared;
 
+// 表示forkjoin时每个线程对应的任务
+// 重要数据成员：ForkJoinShared类型
 struct ForkJoinSlice
 {
   public:
