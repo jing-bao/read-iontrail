@@ -47,6 +47,7 @@ enum InitialHeap {
 };
 
 /* The GC allocation kinds. */
+// cell的类型
 enum AllocKind {
     FINALIZE_OBJECT0,
     FINALIZE_OBJECT0_BACKGROUND,
@@ -149,6 +150,10 @@ const size_t ArenaBitmapWords = ArenaBitmapBits / JS_BITS_PER_WORD;
  * Also only for the last span (|last| & 1)! = 0 as all allocation sizes are
  * multiples of CellSize.
  */
+ 
+// FreeSpan表示在一个Arena中，一个连续的空闲cell序列。
+// first和last是分配限制，分配时会增加first
+// 头结点指向第一个可用的freespan，在分配过程中如果当前freespan被占满，会被更新为下一个freespand
 struct FreeSpan
 {
     uintptr_t   first;
@@ -261,7 +266,7 @@ struct FreeSpan
         uintptr_t arenaAddr = arenaAddress();
         return encodeOffsets(first - arenaAddr, last & ArenaMask);
     }
-
+// 下一步要看的
     /* See comments before FreeSpan for details. */
     MOZ_ALWAYS_INLINE void *allocate(size_t thingSize) {
         JS_ASSERT(thingSize % CellSize == 0);
@@ -516,6 +521,7 @@ struct ArenaHeader : public JS::shadow::ArenaHeader
     inline void unsetAllocDuringSweep();
 };
 
+// Arena在header之后，是对齐的thing序列
 struct Arena
 {
     /*

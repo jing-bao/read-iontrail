@@ -64,12 +64,20 @@ namespace JS {
  * one zone. In Firefox, there is roughly one zone per tab along with a system
  * zone for everything else. Zones mainly serve as boundaries for garbage
  * collection. Unlike compartments, they have no special security properties.
+ // zone是compartment的集合。每个compartment必定且仅仅属于一个zone。
+ // 在Firefox中，大概每个tab有一个zone，其余所有使用一个系统zone。
+ // zone主要作为GC的边界。
+ // 与compartment不同，它们没有特别的安全特性
  *
  * Every GC thing belongs to exactly one zone. GC things from the same zone but
  * different compartments can share an arena (4k page). GC things from different
  * zones cannot be stored in the same arena. The garbage collector is capable of
  * collecting one zone at a time; it cannot collect at the granularity of
  * compartments.
+ // 每个GC thing必定且仅仅属于一个zone。
+ // 相同zone但不同compartment的GC thing可以共享一个arena（4k的页面）
+ // 不同zone的GC thing不能被存储在同一个arena。
+ // GC可以一次回收一个zone，不能在compartment的粒度上回收
  *
  * GC things are tied to zones and compartments as follows:
  *
@@ -77,32 +85,51 @@ namespace JS {
  *   compartments. If an object needs to point to a JSObject in a different
  *   compartment, regardless of zone, it must go through a cross-compartment
  *   wrapper. Each compartment keeps track of its outgoing wrappers in a table.
+ //  JSObject属于一个compartment，且不能在compartment之间共享
+ //  如果一个object需要指向不同compartment的JSObject，无论zone是否相同，它必须通过一个穿越wrapper
+ //  每个compartment有一个表，用于维护出去的wrapper
  *
  * - JSStrings do not belong to any particular compartment, but they do belong
  *   to a zone. Thus, two different compartments in the same zone can point to a
  *   JSString. When a string needs to be wrapped, we copy it if it's in a
  *   different zone and do nothing if it's in the same zone. Thus, transferring
  *   strings within a zone is very efficient.
+ //  JSString不属于任何一个特点的compartment，但是属于一个zone
+ //  因此，在同一个zone的两个不同compartment可以执行一个JSString
+ //  当一个string需要被wrap，如果实在不同zone，我们拷贝它；如果实在同一个zone，则什么也不做
+ //  因此，在一个zone内传递string非常高效
  *
  * - Shapes and base shapes belong to a compartment and cannot be shared between
  *   compartments. A base shape holds a pointer to its compartment. Shapes find
  *   their compartment via their base shape. JSObjects find their compartment
  *   via their shape.
+ //  shape和base shape属于一个compartment，并且不能在compartment之间共享
+ //  base shape维护到它所在compartment的指针
+ //  shape通过它的base shape找到所在compartment
+ //  JSObject通过shape找到所在compartment
  *
  * - Scripts are also compartment-local and cannot be shared. A script points to
  *   its compartment.
+ //  script同样是compartment-local的，不能被共享
+ //  script指向它所在compartment
  *
  * - Type objects and IonCode objects belong to a compartment and cannot be
  *   shared. However, there is no mechanism to obtain their compartments.
+ // Type对象和IonCode对象属于一个compartment，不能被共享
+ // 没有获得它们compartment的机制
  *
  * A zone remains alive as long as any GC things in the zone are alive. A
  * compartment remains alive as long as any JSObjects, scripts, shapes, or base
  * shapes within it are alive.
+ // 只要其中任意GC thing存活，zone就存活
+ // 只要任何jsobject，script，shape或者base shape存活，compartment存活
  *
  * We always guarantee that a zone has at least one live compartment by refusing
  * to delete the last compartment in a live zone. (This could happen, for
  * example, if the conservative scanner marks a string in an otherwise dead
  * zone.)
+ // 我们总是确保zone至少有一个存活的compartment，通过拒绝删除最后一个compartment做到
+ // （这可能发生，例如，如果保守扫描标记了一个string，如果没有这个string，zone应该消亡）
  */
 
 struct Zone : private JS::shadow::Zone, public js::gc::GraphNodeBase<JS::Zone>
@@ -257,6 +284,8 @@ struct Zone : private JS::shadow::Zone, public js::gc::GraphNodeBase<JS::Zone>
      * in use by a parallel worker, into the zone's main
      * allocator.  This is used at the end of a parallel section.
      */
+     // 把线程所用allocator中的数据转移到zone的主allocator中
+     // 在并行阶段结束后使用
     void adoptWorkerAllocator(js::Allocator *workerAllocator) {
         allocator.arenas.adoptArenas(rt, &workerAllocator->arenas);
     }

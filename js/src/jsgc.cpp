@@ -1173,7 +1173,7 @@ ArenaLists::parallelAllocate(Zone *zone, AllocKind thingKind, size_t thingSize)
      // 如果没有可用arena，则分配新的arena。
      // 如果失败，返回NULL，这会导致并行部分终止
 
-    void *t = allocateFromFreeList(thingKind, thingSize);
+    void *t = allocateFromFreeList(thingKind, thingSize);// 尝试从freeLists中分配
     if (t)
         return t;
 
@@ -1192,6 +1192,9 @@ ArenaLists::allocateFromArenaInline(Zone *zone, AllocKind thingKind)
      * fall through to PickChunk() we must be sure that we are holding
      * a lock.
      */
+     // 该函数可以被使用同一个compartment的并行线程调用。
+     // 在这样的情况下，每个线程有一个独立的areanaLists。
+     // 因此，无论何时失败到PickChunk()，必须保证维持一个锁
 
     Chunk *chunk = NULL;
 

@@ -259,6 +259,8 @@ struct ArenaLists
      * GC we only move the head of the of the list of spans back to the arena
      * only for the arena that was not fully allocated.
      */
+     // freeLists和arenaLists数组的大小是alloction Kind的个数
+     // 即每个类型对应一个freespan和一个arenalist
     FreeSpan       freeLists[FINALIZE_LIMIT];
 
     ArenaList      arenaLists[FINALIZE_LIMIT];
