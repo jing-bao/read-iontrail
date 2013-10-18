@@ -26,7 +26,36 @@ using namespace js;
 
 const size_t WORKER_THREAD_STACK_SIZE = 1*1024*1024;////每个线程的堆栈大小
 
-//代表每个线程
+// 代表每个线程
+
+// 状态机
+//                                 run()
+//                                ------
+//                                |循环|
+// 构造函数            start()    v    |   terminate()                    run()
+// ---------->CREATED ----------> ACTIVE ---------------> TERMINATING -----------> TERMINATED
+//              |                 |                                                  ^  ^
+//              |                 |  PR_CreateThread失败                             |  |
+//              |   terminate()   ----------------------------------------------------  |
+//              -------------------------------------------------------------------------
+// 在run()中，一旦开始，会完成当前worklist的所有任务。然后检查是否TERMINATING。
+// 所以ThreadPool要求terminate时，每个线程会先完成当前任务。
+
+// 锁和条件变量都是对每个Worker而言的，所以要同步的是主线程和子线程
+// 锁
+// 子线程始终运行run()，在进入循环前锁住，run()退出即线程退出，此时解锁。在运行某个任务的间隙里，允许增加新任务，所以临时解锁。
+// 主线程通过submit()添加任务，进入时锁住，添加完毕解锁
+// 主线程通过terminate()要求线程退出，进入时锁住，改变状态完毕解锁
+// 一旦子线程循环开始，由于锁的唯一性，submit()和terminate()只能在子线程run()的间隙中完成，且每次操作完整独立
+
+// 条件变量
+// 任务提交：
+// 子线程在run()完成当前任务列表后wait，等待下一次任务提交或结束命令。
+// 主线程submit()增加任务后notify，terminate()更改状态为TERMINATING后notify
+// 线程退出：
+// 主线程在terminate()更改状态为TERMINATING后，循环等待，每次有notify时，检查state是否已经为TERMINATED，直到确定子线程退出，才退出terminate()
+// 子线程退出时notify
+
 class js::ThreadPoolWorker : public Monitor
 {
     const size_t workerId_;
@@ -83,7 +112,7 @@ ThreadPoolWorker::~ThreadPoolWorker()
 bool
 ThreadPoolWorker::init()
 {
-    return Monitor::init();//Monitor类涉及锁和条件变量的操作
+    return Monitor::init();//Monitor类涉及锁和条件变量的操作，包括数据成员PRLock和PRCondVar
 }
 
 bool
@@ -131,7 +160,7 @@ ThreadPoolWorker::run()
     uintptr_t stackLimit = (((uintptr_t)&stackLimitOffset) +
                              stackLimitOffset * JS_STACK_GROWTH_DIRECTION);
 
-    AutoLockMonitor lock(*this);//锁的运用没有细看
+    AutoLockMonitor lock(*this);//锁住Lock
 
     for (;;) {
         while (!worklist_.empty()) {
@@ -139,8 +168,9 @@ ThreadPoolWorker::run()
             {
                 // Unlock so that new things can be added to the
                 // worklist while we are processing the current item:
-                AutoUnlockMonitor unlock(*this);
+                AutoUnlockMonitor unlock(*this);//解锁Lock
                 task->executeFromWorker(workerId_, stackLimit);
+                // unlock析构，锁住Lock
             }
         }
 
@@ -149,29 +179,31 @@ ThreadPoolWorker::run()
 
         JS_ASSERT(state_ == ACTIVE);
 
-        lock.wait();
+        lock.wait();//等待condVar
     }
 
     JS_ASSERT(worklist_.empty() && state_ == TERMINATING);
     state_ = TERMINATED;
-    lock.notify();
+    lock.notify();//释放一个condVar，会在所有等待condVar的线程中选择一个允许运行。如果没有等待线程，空操作
+    // lock析构，解锁Lock
 }
 
 bool
 ThreadPoolWorker::submit(TaskExecutor *task)
 {
-    AutoLockMonitor lock(*this);
+    AutoLockMonitor lock(*this);//锁住Lock
     JS_ASSERT(state_ == ACTIVE);
     if (!worklist_.append(task))
         return false;
-    lock.notify();
+    lock.notify();//释放一个condVar
     return true;
+    // lock析构，解锁Lock
 }
 
 void
 ThreadPoolWorker::terminate()
 {
-    AutoLockMonitor lock(*this);
+    AutoLockMonitor lock(*this);//锁住Lock
 
     if (state_ == CREATED) {
         state_ = TERMINATED;
@@ -180,10 +212,11 @@ ThreadPoolWorker::terminate()
         state_ = TERMINATING;
         lock.notify();
         while (state_ != TERMINATED)
-            lock.wait();
+            lock.wait(); //等待condVar
     } else {
         JS_ASSERT(state_ == TERMINATED);
     }
+    // lock析构，解锁Lock
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -192,6 +225,7 @@ ThreadPoolWorker::terminate()
 // The |ThreadPool| starts up workers, submits work to them, and shuts
 // them down when requested.
 
+// 在调用submit时，会先调用lazyStartWorkers()，如果线程池为空，则启动所有线程。在任何错误下，都会删除已有线程并报告失败。
 ThreadPool::ThreadPool(JSRuntime *rt)
   : runtime_(rt),
     numWorkers_(0), // updated during init()
