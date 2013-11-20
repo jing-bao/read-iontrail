@@ -1549,6 +1549,7 @@ CanIonCompileScript(JSContext *cx, HandleScript script, bool osr)
     return CheckScriptSize(cx, script) == Method_Compiled;
 }
 
+//主要调用：IonCompile
 static MethodStatus
 Compile(JSContext *cx, HandleScript script, AbstractFramePtr fp, jsbytecode *osrPc,
         bool constructing, ExecutionMode executionMode)
@@ -1741,7 +1742,7 @@ ion::CompileFunctionForBaseline(JSContext *cx, HandleScript script, AbstractFram
 
     return Method_Compiled;
 }
-
+//调用者：js::ParallelDo::compileForParallelExecution在ForkJoin.cpp
 MethodStatus
 ion::CanEnterInParallel(JSContext *cx, HandleScript script)
 {
@@ -1750,18 +1751,18 @@ ion::CanEnterInParallel(JSContext *cx, HandleScript script)
     // Note: We return Method_Skipped in this case because the other
     // CanEnter() methods do so. However, ForkJoin.cpp detects this
     // condition differently treats it more like an error.
-    if (!script->canParallelIonCompile())
+    if (!script->canParallelIonCompile())//jsscript.h,检查parallelIon是否为ION_DISABLED_SCRIPT，即之前已经尝试过，不能编译
         return Method_Skipped;
 
     // Skip if the script is being compiled off thread.
     if (script->isParallelIonCompilingOffThread())
         return Method_Skipped;
 
-    MethodStatus status = Compile(cx, script, AbstractFramePtr(), NULL, false,
+    MethodStatus status = Compile(cx, script, AbstractFramePtr(), NULL, false,//编译
                                   ParallelExecution);
     if (status != Method_Compiled) {
         if (status == Method_CantCompile)
-            ForbidCompilation(cx, script, ParallelExecution);
+            ForbidCompilation(cx, script, ParallelExecution);//这里会把parallelIon置为ION_DISABLED_SCRIPT
         return status;
     }
 

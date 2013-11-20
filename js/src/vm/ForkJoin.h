@@ -72,7 +72,7 @@
 // id是slice的id，n是slice的总数目。
 // warmup在 warmup or revovery 阶段是true。
 // 如果warmup为真，func应该做固定数目的工作。
-// 如果warmup为假，func应该尝试昨晚所有指派的工作。
+// 如果warmup为假，func应该尝试做完所有指派的工作。
 //
 // Note that we implicitly assume that |func| is tracking how much
 // work it has accomplished thus far; some techniques for doing this
@@ -91,7 +91,10 @@
 // with reasonable information.  We try to make do with just a few
 // runs, under the hypothesis that parallel execution code which reach
 // type stability relatively quickly.
-//
+//ForkJoin只能在被ion并行模式下编译过的情况下并行执行代码
+//但是，因为ion依赖于合适的类型信息，所以需要先串行执行代码若干次，以准备好各种类型集
+//在并行执行代码很快达到相对类型稳定的假设下，我们试着运行较少次数
+
 // The general strategy of ForkJoin is as follows:
 //
 // - If the code has not yet been run, invoke `func` sequentially with
@@ -99,6 +102,8 @@
 //   do less work than normal---just enough to prime type sets. (See
 //   ParallelArray.js for a discussion of specifically how we do this
 //   in the case of ParallelArray).
+//如果代码没运行过，串行调用func（warmup设为true）。
+//当warmup为true时，func应该尝试做比通常更少的工作，只需要足够准备类型集
 //
 // - Try to execute the code in parallel.  Parallel execution mode has
 //   three possible results: success, fatal error, or bailout.  If a
@@ -107,10 +112,16 @@
 //   modification to shared state, but it might also be that it
 //   attempted to take some theoreticaly pure action that has not been
 //   made threadsafe (yet?).
+//尝试并行执行代码。
+//并行执行模式有三种可能的结果：success，fatal error和bailout
+//如果bailout发生，代表代码企图进行一些并行模式下不允许的动作。
+//可能是一个共享状态修改，也可能是企图进行一些理论上可以但还未实现线程安全的动作。
 //
 // - If parallel execution is successful, ForkJoin returns true.
+//如果successfull，返回true
 //
 // - If parallel execution results in a fatal error, ForkJoin returns false.
+//如果fatal error，返回false
 //
 // - If parallel execution results in a *bailout*, this is when things
 //   get interesting.  In that case, the semantics of parallel
@@ -125,10 +136,19 @@
 //   call to process all remaining data, just a chunk.  After this
 //   recovery execution is complete, we again attempt parallel
 //   execution.
+//如果bailout，事情就有趣了
+//并行执行的语义保证了没有副作用发生
+//因此我们重新调用func但是将warmup设置为true
+//这里的考虑是，通常bailout是由类型防护或类似的假设失败引起的，
+//所以重新运行串行的warmup提供了一个用更多数据重新编译的机会
+//因为warmup是true，我们不期望这次串行调用会处理所有剩余的数据，而只是一个chunk
+//在recovery执行完毕后，我们继续尝试并行执行
 //
 // - If more than a fixed number of bailouts occur, we give up on
 //   parallelization and just invoke |func()| N times in a row (once
 //   for each worker) but with |warmup| set to false.
+//如果超过某个次数的bailout发生，我们放弃并行，
+//改为N次的连续调用func（每个线程一次），warmup设为false
 //
 // Operation callback:
 //
@@ -142,6 +162,13 @@
 // worker thread terminates before calling |check()|, that's fine too.
 // We assume that you do not do unbounded work without invoking
 // |check()|.
+//并行执行过程中，slice.check()必须周期性地被调用，来检查操作的callback
+//这是由ion生成的代码自动完成的
+//如果操作的callback是需要的，slice.check()会安排一次rendezvous
+//即，由于每个线程调用check(),它会停顿，知道所有线程都block（Stop The World）
+//此时，我们完成在主线程上的callback，然后恢复执行
+//如果一个工作线程在check之前终止，也是可以的
+//我们假定你不会在不调用check()的情况下进行超界限的工作
 //
 // Transitive compilation:
 //
@@ -150,18 +177,29 @@
 // Therefore, we try to compile everything that might be needed
 // beforehand. The exact strategy is described in `ParallelDo::apply()`
 // in ForkJoin.cpp, but at the highest level the idea is:
+//并行编译的一个挑战是我们目前在遇到没编译的脚本时必须终止。
+//因此，我们尝试提前编译所有可能用到的内容
+//准确的策略在ForkJoin.cpp的ParallelDo::apply()中描述，但最顶层的思路是：
 //
 // 1. We maintain a flag on every script telling us if that script and
 //    its transitive callees are believed to be compiled. If that flag
 //    is set, we can skip the initial compilation.
+//1.我们在每个脚本维护一个标志，告诉我们脚本和它的所有调用是否被相信可以编译。
+//如果标志位被设置，我们可以跳过初始编译
 // 2. Otherwise, we maintain a worklist that begins with the main
 //    script. We compile it and then examine the generated parallel IonScript,
 //    which will have a list of callees. We enqueue those. Some of these
 //    compilations may take place off the main thread, in which case
 //    we will run warmup iterations while we wait for them to complete.
+//2.否则，我们维护一个任务列表，开始于主脚本。
+//我们编译它然后检查生成的并行IonScript，它会有一个调用列表。将其入列。
+//一些编译可能在主线程外发生，在此情况下我们会在等待完成的同时运行warmup循环
 // 3. If the warmup iterations finish all the work, we're done.
 // 4. If compilations fail, we fallback to sequential.
 // 5. Otherwise, we will try running in parallel once we're all done.
+//3.如果warmup循环结束了所有工作，我们完成了
+//4.如果编译失败，我们退回串行
+//5.否则，一旦完成，我们会尝试并行执行
 //
 // Bailout tracing and recording:
 //
@@ -174,6 +212,11 @@
 // trace, but right now we only record the top-most frame). Note that
 // the error location might not be in the same JSScript as the one
 // which was executing due to inlining.
+//当bailout发生，我们记录一些状态以便可以优雅的恢复。
+//每个ForkJoinSlice有一个指向预先分配的ParallelBailoutRecord的指针
+//该结构被用于记录bailout的原因，在执行的JSScript，以及bailout发生的源码位置
+//原则上，我们可以记录整个堆栈跟踪，但目前只记录最上面的一个frame
+//注意错误位置可能和在执行的JSScript是同一个，由于内联
 //
 // Bailout tracing and recording:
 //
@@ -183,6 +226,9 @@
 // mandatory state that we track unconditionally, the other is
 // optional state that we track only when we plan to inform the user
 // about why a bailout occurred.
+//ForkJoin的调用者有责任传入一个状态？
+//状态可能是两种：一个是强制状态，我们无条件跟踪
+//另一个是选择装惕啊，我们只在计划告知用户关于为什么发生bailout时跟踪
 //
 // The mandatory state consists of two things.
 //
@@ -194,10 +240,18 @@
 //   HasInvalidatedCallTarget, indicating that some callee of this
 //   script was invalidated.  This flag is set as the stack is unwound
 //   during the bailout.
+//强制状态包括两个：
+//- 首先，我们记录栈上最顶层的脚本。这个脚本会被设定为无效。
+//  作为ParallelDo的一部分，每个栈帧最顶层的脚本会被设为无效
+//- 第二，对栈上的每个脚本而言，
+//  我们会设置HasInvalidatedCallTarget标志，代表这个脚本的某些调用是无效的
+//  因为在bailout时栈是松散的
 //
 // The optional state consists of a backtrace of (script, bytecode)
 // pairs.  The rooting on these is currently screwed up and needs to
 // be fixed.
+//选择状态包括一个（script，bytecode）对的回溯。
+//这上面的rooting目前搞砸了，需要修复
 //
 // Garbage collection and allocation:
 //
@@ -227,7 +281,7 @@
 // Allocator通过forkjoinslice存储，forkjoinslice通过TLS存储。
 // 在生成的机器码中，通过allocator进行分配，不需要写屏障。
 // 概念上，永不需要写屏障，因为我们只允许对新分配的对象进行写操作，而这些对象在GC中是black的（已扫描？？）。
-// 但为了安全起见，我们block upon进入并行部分，来确保任何并发的marking或者incremental GC已经完成.
+// 但为了安全起见，我们在进入并行部分时阻塞，来确保任何并发的marking或者incremental GC已经完成.
 //
 // If the GC *is* triggered during parallel execution, it will
 // redirect to the current ForkJoinSlice() and invoke requestGC() (or

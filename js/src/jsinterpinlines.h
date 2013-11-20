@@ -1109,6 +1109,9 @@ ReportIfNotFunction(JSContext *cx, const Value &v, MaybeConstruct construct = NO
  * just call Invoke. If the callee has a valid IonScript, however, it will enter
  * Ion directly.
  */
+ //FastInvokeGuard用于优化从C++本地代码对JS函数的调用，例如Array.map。
+ //如果被调用者没有被Ion编译过，会调用Invoke
+ //如果被调用者有一个可用的IonScript，会直接进入Ion
 class FastInvokeGuard
 {
     InvokeArgsGuard args_;
@@ -1158,6 +1161,7 @@ class FastInvokeGuard
             if (status == ion::Method_Error)
                 return false;
             if (status == ion::Method_Compiled) {
+            //FastInvoke()
                 ion::IonExecStatus result = ion::FastInvoke(cx, fun_, args_);
                 if (IsErrorStatus(result))
                     return false;
@@ -1175,7 +1179,7 @@ class FastInvokeGuard
             }
         }
 #endif
-
+        //Invoke()
         return Invoke(cx, args_);
     }
 

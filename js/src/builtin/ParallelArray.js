@@ -32,8 +32,9 @@
  * Determine the number of chunks of size CHUNK_SIZE;
  * note that the final chunk may be smaller than CHUNK_SIZE.
  */
+ //计算chunk的数目
 function ComputeNumChunks(length) {
-  var chunks = length >>> CHUNK_SHIFT;
+  var chunks = length >>> CHUNK_SHIFT;//32个一块
   if (chunks << CHUNK_SHIFT === length)
     return chunks;
   return chunks + 1;
@@ -60,6 +61,10 @@ function ComputeSliceBounds(numItems, sliceIndex, numSlices) {
  * access the values for a particular slice, use the macros
  * SLICE_START() and so forth.
  */
+ //将numItems数目的items按numSlices片分割。
+ //结果是一个数组，每个slice包含多个值：开始索引，结束索引，当前位置，和一些padding
+ //当前位置初始值与开始索引一样
+ //要得到特定slice的值，使用SLICE_START()之类的宏
 function ComputeAllSliceBounds(numItems, numSlices) {
   // FIXME(bug 844890): Use typed arrays here.
   var info = [];
@@ -287,6 +292,8 @@ function ParallelArrayBuild(self, shape, func, mode) {
     //
     // - Breaking out of named blocks does not currently work (bug 684384);
     // - Unreachable Code Elim. can't properly handle if (a && b) (bug 669796)
+    //如果我们已经嵌套在一个并行部分里，或者用户要求不并行，避免并行编译。
+    //for (;;)循环的作用是绕开一些ion的限制
     if (ShouldForceSequential())
       break parallel;
     if (!TRY_PARALLEL(mode))
@@ -372,6 +379,9 @@ function ParallelArrayBuild(self, shape, func, mode) {
  * element |e| with index |i|. Note that
  * this always operates on the outermost dimension only.
  */
+ //串行，对每个元素，调用func
+ //并行，将元素每32个分为一个chunk，然后将若干个chunk按线程数分配，每个线程执行几个chunk。
+ //      对每个chunk内的每个元素，调用func
 function ParallelArrayMap(func, mode) {
   // FIXME(bug 844887): Check |this instanceof ParallelArray|
   // FIXME(bug 844887): Check |IsCallable(func)|
@@ -386,14 +396,15 @@ function ParallelArrayMap(func, mode) {
     if (!TRY_PARALLEL(mode))
       break parallel;
 
-    var chunks = ComputeNumChunks(length);
-    var numSlices = ForkJoinSlices();
-    var info = ComputeAllSliceBounds(chunks, numSlices);
-    ForkJoin(mapSlice, ForkJoinMode(mode));
+    var chunks = ComputeNumChunks(length);//块数
+    var numSlices = ForkJoinSlices();//总线程数目
+    var info = ComputeAllSliceBounds(chunks, numSlices);//将块数按线程数分割
+    ForkJoin(mapSlice, ForkJoinMode(mode));//主入口，函数是mapSlice
     return NewParallelArray(ParallelArrayView, [length], buffer, 0);
   }
 
   // Sequential fallback:
+  //串行版本
   ASSERT_SEQUENTIAL_IS_OK(mode);
   for (var i = 0; i < length; i++) {
     // Note: Unlike JS arrays, parallel arrays cannot have holes.
@@ -402,10 +413,12 @@ function ParallelArrayMap(func, mode) {
   }
   return NewParallelArray(ParallelArrayView, [length], buffer, 0);
 
+//mapSlice，ForkJoin中的函数func，每个线程执行一次mapSlice，串行处理所负责的所有chunk里的所有元素
   function mapSlice(sliceId, numSlices, warmup) {
     var chunkPos = info[SLICE_POS(sliceId)];
     var chunkEnd = info[SLICE_END(sliceId)];
 
+    //如果是warmup，只需要执行一个chunk
     if (warmup && chunkEnd > chunkPos + 1)
       chunkEnd = chunkPos + 1;
 
@@ -414,7 +427,7 @@ function ParallelArrayMap(func, mode) {
       var indexEnd = std_Math_min(indexStart + CHUNK_SIZE, length);
 
       for (var i = indexStart; i < indexEnd; i++)
-        UnsafeSetElement(buffer, i, func(self.get(i), i, self));
+        UnsafeSetElement(buffer, i, func(self.get(i), i, self));//调用func函数
 
       UnsafeSetElement(info, SLICE_POS(sliceId), ++chunkPos);
     }
@@ -778,7 +791,7 @@ function ParallelArrayScatter(targets, defaultValue, conflictFunc, length, mode)
     ThrowError(JSMSG_BAD_ARRAY_LENGTH, ".prototype.scatter");
 
   parallel: for (;;) { // see ParallelArrayBuild() to explain why for(;;) etc
-    if (ShouldForceSequential())
+    if (ShouldForceSequential())//SelfHosting.cpp
       break parallel;
     if (!TRY_PARALLEL(mode))
       break parallel;

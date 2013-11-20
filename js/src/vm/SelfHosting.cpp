@@ -274,6 +274,7 @@ intrinsic_ForkJoin(JSContext *cx, unsigned argc, Value *vp)
  * ForkJoinSlices(): Returns the number of parallel slices that will
  * be created by ForkJoin().
  */
+ //获得线程数目
 static JSBool
 intrinsic_ForkJoinSlices(JSContext *cx, unsigned argc, Value *vp)
 {

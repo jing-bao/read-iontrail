@@ -1,3 +1,31 @@
+//class ParallelDo 总的控制类，入口
+//class ForkJoinShared （各线程）任务,TaskExecutor的子类
+//class ForkJoinSlice （各线程）用于记录每个线程的相关信息，allocator和bailout等
+//                     在ForkJoinShared::executePortion中会生成当前的slice
+
+//串行
+//ForkJoin -> ExecuteSequentially -> FastInvokeGuard::invoke
+//并行
+//ForkJoin
+//|-ParallelDo::apply
+//  |-enqueueInitialScript
+//  | |-warmupExecution
+//  |   |-ExecuteSequentially
+//  |
+//  |-compileForParallelExecution
+//  | |-ion::CanEnterInParallel
+//  |
+//  |-parallelExecution
+//  | |-ForkJoinShared::execute
+//  |   |-ThreadPool::submitAll      ( worker thread: executeFromWorker              )
+//  |                                (                |-executePortion               )
+//  |                                (                  |-ParallelIonInvoke::invoke  )
+//  |   |-executeFromMainThread
+//  |     |-executePortion
+//  |       |-ParallelIonInvoke::invoke
+//  |
+//  |-recoverFromBailout
+
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
@@ -47,7 +75,10 @@ using namespace js::ion;
 // When JS_THREADSAFE or JS_ION is not defined, we simply run the
 // |func| callback sequentially.  We also forego the feedback
 // altogether.
-
+//退化配置
+//当JS_THREADSAFE or JS_ION未定义时，我们串行执行func，并放弃feedback
+//大部分函数都是无功能的，只需要看forkjoin
+// ForkJoin(mapSlice, mode) -> ExecuteSequentially(cx, mapSlice, false) -> InvokeArgsGuard.invoke()
 static bool
 ExecuteSequentially(JSContext *cx_, HandleValue funVal, bool *complete);
 
@@ -142,11 +173,12 @@ js::ParallelTestsShouldPass(JSContext *cx)
 // All configurations
 //
 // Some code that is shared between degenerate and parallel configurations.
-
+//对numSlices个块中的每个块，调用funVal，其中参数包括i，numSlices和parallelWarmup
 static bool
 ExecuteSequentially(JSContext *cx, HandleValue funVal, bool *complete)
 {
     uint32_t numSlices = ForkJoinSlices(cx);
+    //FastInvokeGuard在jsinterpinlines.h
     FastInvokeGuard fig(cx, funVal);
     bool allComplete = true;
     for (uint32_t i = 0; i < numSlices; i++) {
@@ -157,7 +189,7 @@ ExecuteSequentially(JSContext *cx, HandleValue funVal, bool *complete)
         args.setThis(UndefinedValue());
         args[0].setInt32(i);
         args[1].setInt32(numSlices);
-        args[2].setBoolean(!!cx->runtime->parallelWarmup);
+        args[2].setBoolean(!!cx->runtime->parallelWarmup);//根据这个值判断是否是warmup
         if (!fig.invoke(cx))
             return false;
         allComplete = allComplete & args.rval().toBoolean();
@@ -181,6 +213,7 @@ namespace js {
 
 // When writing tests, it is often useful to specify different modes
 // of operation.
+//写测试时，指定不同的mode通常很有用
 enum ForkJoinMode {
     // WARNING: If you change this enum, you MUST update
     // ForkJoinMode() in ParallelArray.js
@@ -189,24 +222,34 @@ enum ForkJoinMode {
     // sequential.  If compilation is ongoing in a helper thread, then
     // run sequential warmup iterations in the meantime. If those
     // iterations wind up completing all the work, just abort.
+    //尝试并行，回退到串行
+    //如果编译在帮助线程中进行，则同时运行串行warmup循环
+    //如果这些循环最终完成了所有工作，直接终止
     ForkJoinModeNormal,
 
     // Like normal, except that we will keep running warmup iterations
     // until compilations are complete, even if there is no more work
     // to do. This is useful in tests as a "setup" run.
+    //类似normal，除了在编译完成之前一直运行warmup循环，即使没工作要做
+    //在setup run的测试中有用
     ForkJoinModeCompile,
 
     // Requires that compilation has already completed. Expects parallel
     // execution to proceed without a hitch. (Reports an error otherwise)
+    //需要编译已经完成
+    //期待无故障的并行执行，否则报错
     ForkJoinModeParallel,
 
     // Requires that compilation has already completed. Expects
     // parallel execution to bailout once but continue after that without
     // further bailouts. (Reports an error otherwise)
+    //需要编译已经完成
+    //期待并行执行，bailout一次，但是继续剩下的，没有更多bailout。否则报错
     ForkJoinModeRecover,
 
     // Expects all parallel executions to yield a bailout.  If this is not
     // the case, reports an error.
+    //期待所有并行执行产生bailout。否则报错
     ForkJoinModeBailout,
 
     NumForkJoinModes
@@ -408,6 +451,7 @@ class ForkJoinShared : public TaskExecutor, public Monitor
     void removeSlice(ForkJoinSlice *slice);
 }; // class ForkJoinShared
 
+//计数parallelWarmup，用于给mapSlice传递warmup的正确bool值
 class AutoEnterWarmup
 {
     JSRuntime *runtime_;
@@ -482,7 +526,8 @@ class AutoMarkWorldStoppedForGC
 // 它们处理并行编译（如果必要），触发并行执行，并从bailout中恢复。
 static const char *ForkJoinModeString(ForkJoinMode mode);
 
-// 函数的核心操作是ParallelDo.apply()
+// 此函数主要负责根据不同mode和ParallelDo.apply()的执行结果判断下一步动作
+//ForkJoin(mapSlice, mode) -> ParallelDo.apply()
 bool
 js::ForkJoin(JSContext *cx, CallArgs &args)
 {
@@ -490,7 +535,7 @@ js::ForkJoin(JSContext *cx, CallArgs &args)
     JS_ASSERT(args[0].toObject().isFunction());
 
     ForkJoinMode mode = ForkJoinModeNormal;//执行模式，通常用于test
-    if (args.length() > 1) {
+    if (args.length() > 1) {//默认为normal，如果有指定，按指定设置
         JS_ASSERT(args[1].isInt32()); // else the self-hosted code is wrong
         JS_ASSERT(args[1].toInt32() < NumForkJoinModes);
         mode = (ForkJoinMode) args[1].toInt32();
@@ -572,7 +617,9 @@ js::ParallelDo::ParallelDo(JSContext *cx,
 { }
 
 // 调用者：ForkJoin
-// 主要调用：js::ParallelDo::parallelExecution
+// 主要调用：enqueueInitialScript
+//           compileForParallelExecution
+//           js::ParallelDo::parallelExecution
 ExecutionStatus
 js::ParallelDo::apply()
 {
@@ -613,7 +660,7 @@ js::ParallelDo::apply()
     for (uint32_t i = 0; i < slices; i++)
         bailoutRecords_[i].init(cx_);
 
-    if (enqueueInitialScript(&status) == RedLight)
+    if (enqueueInitialScript(&status) == RedLight)//加入初始脚本
         return SpewEndOp(status);
 
     Spew(SpewOps, "Execution mode: %s", ForkJoinModeString(mode_));
@@ -658,6 +705,8 @@ js::ParallelDo::apply()
     return SpewEndOp(sequentialExecution(true));
 }
 
+//调用者：ParallelDo.apply
+//将func_入队
 js::ParallelDo::TrafficLight
 js::ParallelDo::enqueueInitialScript(ExecutionStatus *status)
 {
@@ -665,6 +714,7 @@ js::ParallelDo::enqueueInitialScript(ExecutionStatus *status)
     // RedLight: fatal error or fell back to sequential
 
     // The kernel should be a self-hosted function.
+    //如果fun_不合法(具体没细看，检查是否是self-hosted函数吧),串行
     if (!fun_->isFunction())
         return sequentialExecution(true, status);
 
@@ -675,10 +725,11 @@ js::ParallelDo::enqueueInitialScript(ExecutionStatus *status)
 
     // If this function has not been run enough to enable parallel
     // execution, perform a warmup.
+    //如果必要，warmup
     RootedScript script(cx_, callee->getOrCreateScript(cx_));
     if (!script)
         return RedLight;
-    if (script->getUseCount() < js_IonOptions.usesBeforeCompileParallel) {
+    if (script->getUseCount() < js_IonOptions.usesBeforeCompileParallel) {//usesBeforeCompileParallel在Ion.h，默认为1
         if (warmupExecution(status) == RedLight)
             return RedLight;
     }
@@ -686,6 +737,7 @@ js::ParallelDo::enqueueInitialScript(ExecutionStatus *status)
     // If the main script is already compiled, and we have no reason
     // to suspect any of its callees are not compiled, then we can
     // just skip the compilation step.
+    //如果已经编译过了，检查是否有未编译的调用，如果没有，则可以不加入worklist
     if (script->hasParallelIonScript()) {
         if (!script->parallelIonScript()->hasUncompiledCallTarget()) {
             Spew(SpewOps, "Script %p:%s:%d already compiled, no uncompiled callees",
@@ -698,6 +750,7 @@ js::ParallelDo::enqueueInitialScript(ExecutionStatus *status)
     }
 
     // Otherwise, add to the worklist of scripts to process.
+    //把脚本加入worklist
     if (addToWorklist(script) == RedLight)
         return fatalError(status);
     return GreenLight;
@@ -739,6 +792,9 @@ js::ParallelDo::compileForParallelExecution(ExecutionStatus *status)
             script = worklist_[i];
             fun = script->function();
 
+            //每个JSScript有一个IonScript *ion 用于存放串行代码
+            //和一个IonScript *parallelIon用于存放并行脚本
+            //见ion.h
             if (!script->hasParallelIonScript()) {
                 // Script has not yet been compiled. Attempt to compile it.
                 SpewBeginCompile(script);
@@ -793,6 +849,8 @@ js::ParallelDo::compileForParallelExecution(ExecutionStatus *status)
         // run a warmup iterations in the main thread while we wait.
         // There is a chance that this warmup will finish all the work
         // we have to do.
+        //如果在帮助线程中编译，则等待时在主线程中运行warmup
+        //有机会在warmup中完成所有工作
         if (offMainThreadCompilationsInProgress) {
             if (warmupExecution(status) == RedLight)
                 return RedLight;
@@ -833,6 +891,7 @@ js::ParallelDo::compileForParallelExecution(ExecutionStatus *status)
     return GreenLight;
 }
 
+//调用者：compileForParallelExecution
 js::ParallelDo::TrafficLight
 js::ParallelDo::appendCallTargetsToWorklist(uint32_t index,
                                             ExecutionStatus *status)
@@ -844,7 +903,7 @@ js::ParallelDo::appendCallTargetsToWorklist(uint32_t index,
 
     // Check whether we have already enqueued the targets for
     // this entry and avoid doing it again if so.
-    if (calleesEnqueued_[index])
+    if (calleesEnqueued_[index])//这个数组用于记录是否已经把调用目标入列
         return GreenLight;
     calleesEnqueued_[index] = true;
 
@@ -852,7 +911,7 @@ js::ParallelDo::appendCallTargetsToWorklist(uint32_t index,
     RootedScript target(cx_);
     IonScript *ion = worklist_[index]->parallelIonScript();
     for (uint32_t i = 0; i < ion->callTargetEntries(); i++) {
-        target = ion->callTargetList()[i];
+        target = ion->callTargetList()[i];//IonCode.h
         parallel::Spew(parallel::SpewCompile,
                        "Adding call target %s:%u",
                        target->filename(), target->lineno);
@@ -891,6 +950,7 @@ js::ParallelDo::appendCallTargetToWorklist(HandleScript script,
         // called. Remember that we will have run at least one warmup
         // execution by now, so if we haven't seen it called it's
         // likely due to over-approx.  in the callee list.
+        //这时至少跑过一次warmup，所以如果这个script没有被跑到过，可以跳过
         if (script->getUseCount() < js_IonOptions.usesBeforeCompileParallel) {
             Spew(SpewCompile, "Skipping %p:%s:%u, use count %u < %u",
                  script.get(), script->filename(), script->lineno,
@@ -933,6 +993,7 @@ js::ParallelDo::addToWorklist(HandleScript script)
     return true;
 }
 
+//串行执行，最终调用ExecuteSequentially，返回RedLight
 js::ParallelDo::TrafficLight
 js::ParallelDo::sequentialExecution(bool disqualified, ExecutionStatus *status)
 {
@@ -1099,7 +1160,8 @@ js::ParallelDo::invalidateBailedOutScripts()
 
     return true;
 }
-
+//执行warmup
+//主要调用：ExecuteSequentially
 js::ParallelDo::TrafficLight
 js::ParallelDo::warmupExecution(ExecutionStatus *status)
 {
@@ -1146,6 +1208,9 @@ class AutoEnterParallelSection
         // that there is no incremental GC in progress and force
         // a minor GC to ensure no cross-generation pointers get
         // created:
+        //注意：我们在并行部分不允许GC
+        //并且，我们不希望担心将写屏障变成线程安全的
+        //因此，我们确保在过程中没有invremental GC，并强制进行一次新生代GC来确保没有生成隔代指针
 
         if (JS::IsIncrementalGCInProgress(cx->runtime)) {
             JS::PrepareForIncrementalGC(cx->runtime);
@@ -1173,17 +1238,17 @@ js::ParallelDo::parallelExecution(ExecutionStatus *status)
     // Recursive use of the ThreadPool is not supported.  Right now we
     // cannot get here because parallel code cannot invoke native
     // functions such as ForkJoin().
-    JS_ASSERT(ForkJoinSlice::Current() == NULL);
+    JS_ASSERT(ForkJoinSlice::Current() == NULL);//得到当前线程的ForkJoinSlice
 
-    AutoEnterParallelSection enter(cx_);
+    AutoEnterParallelSection enter(cx_);//设置GC
 
-    ThreadPool *threadPool = &cx_->runtime->threadPool;
-    uint32_t numSlices = ForkJoinSlices(cx_);
+    ThreadPool *threadPool = &cx_->runtime->threadPool;//线程池
+    uint32_t numSlices = ForkJoinSlices(cx_);//线程数
 
     RootedObject rootedFun(cx_, fun_);
     ForkJoinShared shared(cx_, threadPool, rootedFun, numSlices, numSlices - 1,
                           &bailoutRecords_[0]);//ForkJoinShared用来表示任务
-    if (!shared.init()) {
+    if (!shared.init()) {//初始化ForkJoinShared的条件变量、锁、allocator等
         *status = ExecutionFatal;
         return RedLight;
     }
@@ -1328,6 +1393,11 @@ ForkJoinShared::init()
     // arena list an object is in to decide if it is writable.  If we
     // used the zone |Allocator| for the main thread, then the
     // main thread would be permitted to write to any object it wants.
+    //创建临时的arena来防止并行代码中分配的数据
+    //注意：你可能跟我开始一样以为我们可以对主线程使用zone Allocator
+    //这是错的，因为执行并行代码时我们有时会检查一个对象在哪个arena列表中，来决定是否可写。
+    //如果我们对主线程使用zone Allocator，那么主线程会被允许写任何想写的对象
+    //关于zone，arena等内存概念，翻项目记录
 
     if (!Monitor::init())
         return false;
@@ -1400,7 +1470,7 @@ ForkJoinShared::execute()
     {
         gc::AutoSuppressGC gc(cx_);
         AutoUnlockMonitor unlock(*this);
-        if (!threadPool_->submitAll(cx_, this))//将自身增加到每个thread的worklist中
+        if (!threadPool_->submitAll(cx_, this))//将自身增加到每个thread的worklist中,所有线程会开启并运行executeFromWorker
             return TP_FATAL;
         executeFromMainThread();
     }
