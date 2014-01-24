@@ -23,6 +23,11 @@ using parallel::Spew;
 using parallel::SpewMIR;
 using parallel::SpewCompile;
 
+// DROP_OP似乎是直接忽略这条命令
+// SPECIALIZED_OP是一些数值操作，检查类型是否为int或double，否则作为UNSAFE处理
+// UNSAFE_OP标记unsafe_
+// WRITE_GUARDED_OP，在前面插入一个写保护MIR节点
+
 #define SAFE_OP(op)                             \
     virtual bool visit##op(M##op *prop) { return true; }
 
@@ -302,10 +307,14 @@ ParallelArrayAnalysis::analyze()
     // Walk the basic blocks in a DFS.  When we encounter a block with an
     // unsafe instruction, then we know that this block will bailout when
     // executed.  Therefore, we replace the block.
+    // 深度优先遍历所有块，将不安全的块替换为在执行时会bailout的块
     //
     // We don't need a worklist, though, because the graph is sorted
     // in RPO.  Therefore, we just use the marked flags to tell us
     // when we visited some predecessor of the current block.
+    // 我们不需要工作列表，因为图是以RPO分类的。
+    // 因此，当我们访问当前块的前置块时，我们使用flag来标记
+    //
     JSContext *cx = GetIonContext()->cx;
     ParallelArrayVisitor visitor(cx, graph_);
     graph_.entryBlock()->mark();  // Note: in par. exec., we never enter from OSR.
@@ -576,6 +585,7 @@ ParallelArrayVisitor::visitRest(MRest *ins)
                                       ins->numFormals(), templateObj));
 }
 
+// 把NewXXX节点替换为并行版本。新的MIR节点为MParNew
 bool
 ParallelArrayVisitor::replaceWithParNew(MInstruction *newInstruction,
                                         JSObject *templateObject)
@@ -605,6 +615,10 @@ ParallelArrayVisitor::replace(MInstruction *oldInstruction,
 // cannot determine the origin of an object, we can insert a write
 // guard which will check whether the object was allocated from the
 // per-thread-arena or not.
+// 我们指向允许写入本地保护的对象
+// 并且，我们想避免PIC和其他非线程安全的内容。
+// 如果我们不能确定对象的来源，我们可以插入一个写保护
+// 检查对象是否是在每个线程自己的arena分配的
 
 bool
 ParallelArrayVisitor::insertWriteGuard(MInstruction *writeInstruction,
@@ -739,7 +753,7 @@ ParallelArrayVisitor::visitInterruptCheck(MInterruptCheck *ins)
 //
 // Some ops, like +, can be specialized to ints/doubles.  Anything
 // else is terrifying.
-//
+// 一些操作，例如+，可以被详细到int或double。其他情况是可怕的。
 // TODO---Eventually, we should probably permit arbitrary + but bail
 // if the operands are not both integers/floats.
 

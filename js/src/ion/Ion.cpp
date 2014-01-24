@@ -932,6 +932,8 @@ ion::ToggleBarriers(JS::Zone *zone, bool needs)
 namespace js {
 namespace ion {
 
+//调用者：CompileBackEnd
+//调用：ParallelArrayAnalysis.analyze
 bool
 OptimizeMIR(MIRGenerator *mir)
 {
@@ -1145,7 +1147,7 @@ OptimizeMIR(MIRGenerator *mir)
     AssertGraphCoherency(graph);
 
     if (graph.entryBlock()->info().executionMode() == ParallelExecution) {
-        ParallelArrayAnalysis analysis(mir, graph);
+        ParallelArrayAnalysis analysis(mir, graph); // 判断是否并行安全
         if (!analysis.analyze())
             return false;
     }
@@ -1253,6 +1255,7 @@ GenerateCode(MIRGenerator *mir, LIRGraph *lir, MacroAssembler *maybeMasm)
     return codegen;
 }
 
+//调用者：IonCompile
 CodeGenerator *
 CompileBackEnd(MIRGenerator *mir, MacroAssembler *maybeMasm)
 {
@@ -1344,6 +1347,7 @@ OffThreadCompilationAvailable(JSContext *cx)
         && !cx->runtime->spsProfiler.enabled();
 }
 
+// 调用者：Compile
 static AbortReason
 IonCompile(JSContext *cx, JSScript *script,
            AbstractFramePtr fp, jsbytecode *osrPc, bool constructing,
@@ -1405,17 +1409,18 @@ IonCompile(JSContext *cx, JSScript *script,
     RootedScript builderScript(cx, builder->script());
     IonSpewNewFunction(graph, builderScript);
 
-    if (!builder->build()) {
+    if (!builder->build()) {// Script->MIR
         IonSpew(IonSpew_Abort, "Builder failed to build.");
         return builder->abortReason();
     }
     builder->clearForBackEnd();
 
     // If possible, compile the script off thread.
+    // 使用另一个线程进行编译
     if (OffThreadCompilationAvailable(cx)) {
-        SetIonScript(builder->script(), executionMode, ION_COMPILING_SCRIPT);
+        SetIonScript(builder->script(), executionMode, ION_COMPILING_SCRIPT);// ExecutionModeInlines.h
 
-        if (!StartOffThreadIonCompile(cx, builder)) {
+        if (!StartOffThreadIonCompile(cx, builder)) {// jsworkers.cpp
             IonSpew(IonSpew_Abort, "Unable to start off-thread ion compilation.");
             return AbortReason_Alloc;
         }
@@ -1427,7 +1432,7 @@ IonCompile(JSContext *cx, JSScript *script,
         return AbortReason_NoAbort;
     }
 
-    ScopedJSDeletePtr<CodeGenerator> codegen(CompileBackEnd(builder));
+    ScopedJSDeletePtr<CodeGenerator> codegen(CompileBackEnd(builder));// MIR->LIR->code
     if (!codegen) {
         IonSpew(IonSpew_Abort, "Failed during back-end compilation.");
         return AbortReason_Disable;
@@ -1549,6 +1554,7 @@ CanIonCompileScript(JSContext *cx, HandleScript script, bool osr)
     return CheckScriptSize(cx, script) == Method_Compiled;
 }
 
+//调用者：CanEnterInParallel
 //主要调用：IonCompile
 static MethodStatus
 Compile(JSContext *cx, HandleScript script, AbstractFramePtr fp, jsbytecode *osrPc,
@@ -1743,6 +1749,7 @@ ion::CompileFunctionForBaseline(JSContext *cx, HandleScript script, AbstractFram
     return Method_Compiled;
 }
 //调用者：js::ParallelDo::compileForParallelExecution在ForkJoin.cpp
+//主要调用：Compile
 MethodStatus
 ion::CanEnterInParallel(JSContext *cx, HandleScript script)
 {

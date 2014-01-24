@@ -9,6 +9,7 @@
 
 // This file declares the data structures for building a MIRGraph from a
 // JSScript.
+// 从JSScript到MIRGraph
 
 #include "MIR.h"
 #include "MIRGraph.h"

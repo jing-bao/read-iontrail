@@ -484,6 +484,7 @@ MacroAssembler::newGCShortString(const Register &result, Label *fail)
     newGCThing(result, js::gc::FINALIZE_SHORT_STRING, fail);
 }
 
+// 并行分配新对象
 void
 MacroAssembler::parNewGCThing(const Register &result,
                               const Register &threadContextReg,
@@ -496,6 +497,9 @@ MacroAssembler::parNewGCThing(const Register &result,
     // custom Allocator in the ForkJoinSlice*, rather than being
     // hardcoded to the compartment allocator.  This requires two
     // temporary registers.
+    // 与newGCThing()类似，
+    // 除了它是从ForkJoinSlice*的Allocator上分配而不是硬编码到compartment的allocator
+    // 这需要两个临时寄存器
     //
     // Subtle: I wanted to reuse `result` for one of the temporaries,
     // but the register allocator was assigning it to the same

@@ -5301,6 +5301,8 @@ IonBuilder::jsop_initprop(HandlePropertyName name)
 
     // In parallel execution, we never require write barriers.  See
     // forkjoin.cpp for more information.
+    // 这里是parallel模式的不同之一：不需要barrier
+    // 在forkjoin里看，好像是由于不线程安全
     switch (info().executionMode()) {
       case SequentialExecution:
         break;
@@ -6317,6 +6319,7 @@ IonBuilder::jsop_getelem_dense()
     // NB: We disable this optimization in parallel execution mode
     // because it is inherently not threadsafe (how do you convert the
     // array atomically when there might be concurrent readers)?
+    // parallel模式下取消这个优化
     types::StackTypeSet *objTypes = obj->resultTypeSet();
     ExecutionMode executionMode = info().executionMode();
     bool loadDouble =

@@ -22,6 +22,8 @@ class AutoDestroyAllocator;
 // Determines whether a function is compatible for parallel execution.
 // Removes basic blocks containing unsafe MIR operations from the
 // graph and replaces them with MParBailout blocks.
+// 判断一个函数是否并行兼容
+// 从图中移除具有不安全的MIR指令的基础块，使用MParBailout块代替
 class ParallelArrayAnalysis
 {
     MIRGenerator *mir_;
@@ -43,6 +45,8 @@ class ParallelArrayAnalysis
 // Code to collect list of possible call targets by scraping through
 // TI and baseline data. Used to permit speculative transitive
 // compilation in vm/ForkJoin.
+// 通过TI和baseline数据收集可能调用目标列表的代码。
+// 用于允许ForkJoin中的推测传递编译
 //
 // This code may clone scripts and thus may invoke the GC.  Hence only
 // run from the link phase, which executes on the main thread.

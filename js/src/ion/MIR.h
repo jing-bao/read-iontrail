@@ -123,6 +123,10 @@ typedef InlineList<MUse>::iterator MUseIterator;
 //
 // Nodes can hold references to MDefinitions. Each MDefinition has a list of
 // nodes holding such a reference (its use chain).
+// 节点（MNode）是MIR图的入口。有两种类别：
+// MInstruction：IR流中出现的指令
+// MResumePoint：对应解释器栈的状态的一系列指令？？
+// 节点可以维护MDefinitions的引用。每个MDefinition有一个维护引用的节点列表（使用链）
 class MNode : public TempObject
 {
     friend class MDefinition;
@@ -247,6 +251,7 @@ class AliasSet {
 };
 
 // An MDefinition is an SSA name.
+// MDefinition是一个SSA名字
 class MDefinition : public MNode
 {
     friend class MBasicBlock;
@@ -600,6 +605,8 @@ class MInstruction
         return visitor->visit##opcode(this);                                \
     }
 
+// Ary是“几元”的后缀
+// 它的子类包括MNullaryInstruction，MUnaryInstruction，MBinaryInstruction等 
 template <size_t Arity>
 class MAryInstruction : public MInstruction
 {
@@ -783,6 +790,7 @@ class MCallee : public MNullaryInstruction
     }
 };
 
+//子类包括MTest，MGoto等
 class MControlInstruction : public MInstruction
 {
   public:
@@ -4545,6 +4553,7 @@ class MStoreElementCommon
     bool needsBarrier_;
     MIRType elementType_;
     bool racy_; // if true, exempted from normal data race req. during par. exec.
+    // racy，适合race，免除数据竞争问题
 
   protected:
     MStoreElementCommon()
@@ -7610,6 +7619,8 @@ class MParNewDenseArray : public MBinaryInstruction
 // A resume point contains the information needed to reconstruct the interpreter
 // state from a position in the JIT. See the big comment near resumeAfter() in
 // IonBuilder.cpp.
+// MResumePoint包含从JIT的某个位置重建解释器状态的信息。
+// 阅读resumeAfter()附近的详细注释
 class MResumePoint : public MNode, public InlineForwardListNode<MResumePoint>
 {
   public:
